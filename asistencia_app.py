@@ -13,23 +13,13 @@ st.set_page_config(page_title="Asistencia Loga", page_icon="🛡️", layout="ce
 query_params = st.query_params
 division = query_params.get("div", "No seleccionada")
 
-# --- FUNCIÓN DE VERIFICACIÓN (SIN CACHE) ---
 def verificar_registro_previo(fecha, div):
     url = f"https://api.notion.com/v1/databases/{DB_ASISTENCIA}/query"
-    payload = {
-        "filter": {
-            "and": [
-                {"property": "Fecha", "date": {"equals": fecha.strftime("%Y-%m-%d")}},
-                {"property": "División", "select": {"equals": div}}
-            ]
-        }
-    }
+    payload = {"filter": {"and": [{"property": "Fecha", "date": {"equals": fecha.strftime("%Y-%m-%d")}}, {"property": "División", "select": {"equals": div}}]}}
     try:
         res = requests.post(url, headers=headers, json=payload)
-        # Retornamos True si hay al menos un resultado
         return len(res.json().get("results", [])) > 0
-    except:
-        return False
+    except: return False
 
 @st.cache_data(ttl=60)
 def fetch_jugadores(div):
@@ -41,7 +31,7 @@ def fetch_jugadores(div):
         return [{"nombre": next((v.get("title", [{}])[0].get("plain_text") for k, v in p["properties"].items() if v["type"] == "title"), "Sin nombre"), "id": p["id"]} for p in response.json().get("results", [])]
     except: return []
 
-# --- INTERFAZ ---
+# Cabecera
 col_img, col_title = st.columns([1, 4])
 with col_img:
     files = [f for f in os.path.exists('.') and os.listdir('.') if f.lower().startswith('logo')]
@@ -53,11 +43,14 @@ if division == "No seleccionada":
     st.error("Accede con ?div=M16 (ejemplo)")
     st.stop()
 
-# Selector de fecha (DD/MM/YYYY)
+# --- BLOQUE DE FECHA Y AVISO INMEDIATO ---
 fecha_input = st.date_input("Seleccionar Fecha", datetime.now(), format="DD/MM/YYYY")
 
-# VERIFICACIÓN EN TIEMPO REAL
-hay_datos = verificar_registro_previo(fecha_input, division)
+# El aviso aparece aquí, pegado al calendario
+if verificar_registro_previo(fecha_input, division):
+    st.warning(f"⚠️ ATENCIÓN: Ya se registró asistencia para {division} el día {fecha_input.strftime('%d/%m/%Y')}.")
+
+st.divider()
 
 jugadores = fetch_jugadores(division)
 if not jugadores:
@@ -79,10 +72,7 @@ for j in jugadores:
     )
     st.write("---")
 
-# --- BLOQUE DE AVISO Y CONTADOR ---
-if hay_datos:
-    st.warning(f"⚠️ ATENCIÓN: Ya se registró asistencia para {division} el {fecha_input.strftime('%d/%m/%Y')}. Si envías ahora, se duplicarán los datos.")
-
+# Contador final
 resumen = list(st.session_state.asistencias.values())
 st.markdown(f"""
     <div style="display: flex; justify-content: space-around; background-color: #262730; padding: 15px; border-radius: 10px; margin: 20px 0; color: white;">
@@ -92,9 +82,8 @@ st.markdown(f"""
     </div>
 """, unsafe_allow_html=True)
 
-# Botón Envío
 if st.button("Enviar asistencia", use_container_width=True, type="primary"):
-    with st.spinner("Enviando registros a Notion..."):
+    with st.spinner("Guardando en Notion..."):
         errores = []
         for j in jugadores:
             payload = {
@@ -106,11 +95,10 @@ if st.button("Enviar asistencia", use_container_width=True, type="primary"):
                     "División": {"select": {"name": division}}
                 }
             }
-            res = requests.post("https://api.notion.com/v1/pages", headers=headers, json=payload)
-            if res.status_code != 200:
+            if requests.post("https://api.notion.com/v1/pages", headers=headers, json=payload).status_code != 200:
                 errores.append(j['nombre'])
         
         if not errores:
-            st.success(f"¡Asistencia de {division} enviada con éxito!")
+            st.success(f"¡Asistencia de {division} enviada!")
         else:
-            st.error(f"Error en {len(errores)} registros. Revisa la conexión.")
+            st.error(f"Error en {len(errores)} registros.")
