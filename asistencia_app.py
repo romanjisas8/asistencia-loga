@@ -8,40 +8,66 @@ DB_JUGADORES = st.secrets["DB_JUGADORES"]
 DB_ASISTENCIA = st.secrets["DB_ASISTENCIA"]
 headers = {"Authorization": f"Bearer {TOKEN}", "Notion-Version": "2022-06-28", "Content-Type": "application/json"}
 
-st.set_page_config(page_title="Loga M16", page_icon="🛡️", layout="centered")
+st.set_page_config(page_title="Asistencia Loga M16", page_icon="🛡️", layout="centered")
 
-# --- CONTADOR ---
-if 'asistencias' not in st.session_state: st.session_state.asistencias = {}
-resumen = list(st.session_state.asistencias.values())
-c1, c2, c3 = st.columns(3)
-c1.metric("Pres", resumen.count("Presente"))
-c2.metric("Aus", resumen.count("Ausente"))
-c3.metric("SAF", resumen.count("SAF"))
-st.divider()
+@st.cache_data(ttl=60)
+def fetch_jugadores():
+    url = f"https://api.notion.com/v1/databases/{DB_JUGADORES}/query"
+    try:
+        response = requests.post(url, headers=headers, json={})
+        jugadores = []
+        for page in response.json().get("results", []):
+            props = page["properties"]
+            page_id = page["id"]
+            # Buscar el título (nombre)
+            nombre = next((v.get("title", [{}])[0].get("plain_text") for k, v in props.items() if v["type"] == "title"), "Sin nombre")
+            # Verificar estado
+            estado = props.get("Estado", {}).get("select", {}).get("name", "Activo")
+            if estado == "Activo": jugadores.append({"nombre": nombre, "id": page_id})
+        return sorted(jugadores, key=lambda x: x['nombre'])
+    except: return []
 
-# Cabecera y Lista
+jugadores = fetch_jugadores()
+if 'asistencias' not in st.session_state:
+    st.session_state.asistencias = {j['nombre']: "Ausente" for j in jugadores}
+
+# Interfaz
 col_img, col_title = st.columns([1, 4])
-with col_img: 
+with col_img:
     if os.path.exists("logo.png"): st.image("logo.png", width=80)
     elif os.path.exists("logo.jpg"): st.image("logo.jpg", width=80)
+    else: st.write("🛡️")
 with col_title: st.title("Loga M16")
 
-jugadores = # ... (aquí cargamos los jugadores como antes) ...
+st.subheader("Jugadores Activos")
+for j in jugadores:
+    nombre = j['nombre']
+    st.text(nombre) 
+    st.session_state.asistencias[nombre] = st.radio(
+        nombre, ["Presente", "Ausente", "SAF"],
+        index=1 if st.session_state.asistencias.get(nombre) == "Ausente" else (0 if st.session_state.asistencias.get(nombre) == "Presente" else 2),
+        key=f"r_{nombre}", label_visibility="collapsed", horizontal=True
+    )
+    st.write("---")
 
-# ... (bucle de radio buttons) ...
-
-# BOTÓN DE ENVÍO
-if st.button("Enviar asistencia", type="primary"):
+if st.button("Enviar asistencia", use_container_width=True, type="primary"):
+    errores = []
     for j in jugadores:
         nombre = j['nombre']
+        estado = st.session_state.asistencias[nombre]
+        
+        # Enviar a Notion
         payload = {
             "parent": {"database_id": DB_ASISTENCIA},
             "properties": {
                 "Jugador": {"relation": [{"id": j['id']}]},
-                "Asistencia": {"select": {"name": st.session_state.asistencias[nombre]}},
+                "Asistencia": {"select": {"name": estado}},
                 "Fecha": {"date": {"start": datetime.now().strftime("%Y-%m-%d")}}
             }
         }
         res = requests.post("https://api.notion.com/v1/pages", headers=headers, json=payload)
         if res.status_code != 200:
-            st.error(f"Error en {nombre}: {res.json()['message']}")
+            errores.append(f"{nombre}: {res.json().get('message', 'Error')}")
+    
+    if not errores: st.success("¡Datos enviados!")
+    else: st.error("Errores: " + ", ".join(errores))
