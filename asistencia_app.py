@@ -5,23 +5,22 @@ import os
 
 TOKEN = st.secrets["NOTION_TOKEN"]
 DB_JUGADORES = st.secrets["DB_JUGADORES"]
-DB_ASISTENCIA = st.secrets["DB_ASISTENCIA"]
+# Este es el ID de la base de datos de Asistencias real
+DB_ASISTENCIA = "2cdaefb4697c8118ba86f31c4609eb84" 
 headers = {"Authorization": f"Bearer {TOKEN}", "Notion-Version": "2022-06-28", "Content-Type": "application/json"}
 
 st.set_page_config(page_title="Asistencia Loga M16", page_icon="🛡️", layout="centered")
 
 @st.cache_data(ttl=60)
 def fetch_jugadores():
-    url = f"https://api.notion.com/v1/databases/{DB_JUGADORES}/query"
+    url = f"https://api.notion.com/v1/databases/{st.secrets['DB_JUGADORES']}/query"
     try:
         response = requests.post(url, headers=headers, json={})
         jugadores = []
         for page in response.json().get("results", []):
             props = page["properties"]
             page_id = page["id"]
-            # Buscar el título (nombre)
             nombre = next((v.get("title", [{}])[0].get("plain_text") for k, v in props.items() if v["type"] == "title"), "Sin nombre")
-            # Verificar estado
             estado = props.get("Estado", {}).get("select", {}).get("name", "Activo")
             if estado == "Activo": jugadores.append({"nombre": nombre, "id": page_id})
         return sorted(jugadores, key=lambda x: x['nombre'])
@@ -31,12 +30,11 @@ jugadores = fetch_jugadores()
 if 'asistencias' not in st.session_state:
     st.session_state.asistencias = {j['nombre']: "Ausente" for j in jugadores}
 
-# Interfaz
+# Cabecera
 col_img, col_title = st.columns([1, 4])
 with col_img:
     if os.path.exists("logo.png"): st.image("logo.png", width=80)
     elif os.path.exists("logo.jpg"): st.image("logo.jpg", width=80)
-    else: st.write("🛡️")
 with col_title: st.title("Loga M16")
 
 st.subheader("Jugadores Activos")
@@ -56,7 +54,6 @@ if st.button("Enviar asistencia", use_container_width=True, type="primary"):
         nombre = j['nombre']
         estado = st.session_state.asistencias[nombre]
         
-        # Enviar a Notion
         payload = {
             "parent": {"database_id": DB_ASISTENCIA},
             "properties": {
