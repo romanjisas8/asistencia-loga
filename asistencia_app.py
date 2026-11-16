@@ -18,10 +18,9 @@ def fetch_jugadores():
         jugadores = []
         for page in response.json().get("results", []):
             props = page["properties"]
-            page_id = page["id"]
             nombre = next((v.get("title", [{}])[0].get("plain_text") for k, v in props.items() if v["type"] == "title"), "Sin nombre")
             estado = props.get("Estado", {}).get("select", {}).get("name", "Activo")
-            if estado == "Activo": jugadores.append({"nombre": nombre, "id": page_id})
+            if estado == "Activo": jugadores.append({"nombre": nombre, "id": page["id"]})
         return sorted(jugadores, key=lambda x: x['nombre'])
     except: return []
 
@@ -40,7 +39,6 @@ with col_title: st.title("Loga M16")
 st.date_input("Fecha", datetime.now())
 st.subheader("Jugadores Activos")
 
-# Lista de jugadores
 for j in jugadores:
     nombre = j['nombre']
     st.text(nombre) 
@@ -51,15 +49,31 @@ for j in jugadores:
     )
     st.write("---")
 
-# --- CONTADOR ESTRUCTURADO (Justo antes del botón) ---
+# CONTADOR FORZADO HORIZONTAL (Sin CSS externo, solo estilos inline)
 resumen = list(st.session_state.asistencias.values())
-c_p, c_a, c_s = st.columns(3)
-c_p.metric("Pres", resumen.count("Presente"))
-c_a.metric("Aus", resumen.count("Ausente"))
-c_s.metric("SAF", resumen.count("SAF"))
-
-st.write("---")
+st.markdown(f"""
+    <div style="display: table; width: 100%; table-layout: fixed; background: #262730; color: white; border-radius: 10px; margin: 20px 0;">
+        <div style="display: table-row;">
+            <div style="display: table-cell; padding: 15px; text-align: center;">Pres<br><span style="font-size:20px;">{resumen.count("Presente")}</span></div>
+            <div style="display: table-cell; padding: 15px; text-align: center;">Aus<br><span style="font-size:20px;">{resumen.count("Ausente")}</span></div>
+            <div style="display: table-cell; padding: 15px; text-align: center;">SAF<br><span style="font-size:20px;">{resumen.count("SAF")}</span></div>
+        </div>
+    </div>
+""", unsafe_allow_html=True)
 
 if st.button("Enviar asistencia", use_container_width=True, type="primary"):
-    # (Lógica de envío)
-    st.success("¡Datos enviados!")
+    errores = []
+    for j in jugadores:
+        nombre = j['nombre']
+        payload = {
+            "parent": {"database_id": DB_ASISTENCIA},
+            "properties": {
+                "Jugador": {"relation": [{"id": j['id']}]},
+                "Asistencia": {"select": {"name": st.session_state.asistencias[nombre]}},
+                "Fecha": {"date": {"start": datetime.now().strftime("%Y-%m-%d")}}
+            }
+        }
+        res = requests.post("https://api.notion.com/v1/pages", headers=headers, json=payload)
+        if res.status_code != 200: errores.append(nombre)
+    if not errores: st.success("¡Datos enviados!")
+    else: st.error("Errores en: " + ", ".join(errores))
