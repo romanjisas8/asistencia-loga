@@ -5,11 +5,26 @@ import os
 
 TOKEN = st.secrets["NOTION_TOKEN"]
 DB_JUGADORES = st.secrets["DB_JUGADORES"]
-DB_ASISTENCIA = st.secrets["DB_ASISTENCIA"]
 headers = {"Authorization": f"Bearer {TOKEN}", "Notion-Version": "2022-06-28", "Content-Type": "application/json"}
 
-# Configuración de página
 st.set_page_config(page_title="Asistencia Loga M16", page_icon="🛡️", layout="centered")
+
+# CSS para que el tablero sea legible en CUALQUIER modo
+st.markdown("""
+    <style>
+    .stats-card {
+        background-color: var(--secondary-background-color);
+        padding: 15px;
+        border-radius: 10px;
+        border: 1px solid var(--border-color);
+        display: flex;
+        justify-content: space-around;
+        margin: 20px 0;
+        color: var(--text-color);
+    }
+    .stat-val { font-size: 20px; font-weight: bold; }
+    </style>
+""", unsafe_allow_html=True)
 
 @st.cache_data(ttl=60)
 def fetch_jugadores():
@@ -19,10 +34,9 @@ def fetch_jugadores():
         jugadores = []
         for page in response.json().get("results", []):
             props = page["properties"]
-            page_id = page["id"]
             nombre = next((v.get("title", [{}])[0].get("plain_text") for k, v in props.items() if v["type"] == "title"), "Sin nombre")
             estado = props.get("Estado", {}).get("select", {}).get("name", "Activo")
-            if estado == "Activo": jugadores.append({"nombre": nombre, "id": page_id})
+            if estado == "Activo": jugadores.append({"nombre": nombre, "id": page["id"]})
         return sorted(jugadores, key=lambda x: x['nombre'])
     except: return []
 
@@ -30,7 +44,6 @@ jugadores = fetch_jugadores()
 if 'asistencias' not in st.session_state:
     st.session_state.asistencias = {j['nombre']: "Ausente" for j in jugadores}
 
-# Cabecera con Logo
 col_img, col_title = st.columns([1, 4])
 with col_img:
     if os.path.exists("logo.png"): st.image("logo.png", width=80)
@@ -41,7 +54,6 @@ with col_title: st.title("Loga M16")
 st.date_input("Fecha", datetime.now())
 st.subheader("Jugadores Activos")
 
-# Lista de jugadores
 for j in jugadores:
     nombre = j['nombre']
     st.text(nombre) 
@@ -54,13 +66,13 @@ for j in jugadores:
 
 st.divider()
 
-# Contador debajo de la lista
+# Contador Dinámico con variables de tema de Streamlit
 resumen = list(st.session_state.asistencias.values())
 st.markdown(f"""
-    <div style="display: flex; justify-content: space-around; background-color: #262730; padding: 15px; border-radius: 10px; margin: 20px 0;">
-        <div style="text-align: center;"><b>Pres</b><br><span style="font-size: 20px;">{resumen.count("Presente")}</span></div>
-        <div style="text-align: center;"><b>Aus</b><br><span style="font-size: 20px;">{resumen.count("Ausente")}</span></div>
-        <div style="text-align: center;"><b>SAF</b><br><span style="font-size: 20px;">{resumen.count("SAF")}</span></div>
+    <div class="stats-card">
+        <div style="text-align: center;"><b>Pres</b><br><div class="stat-val">{resumen.count("Presente")}</div></div>
+        <div style="text-align: center;"><b>Aus</b><br><div class="stat-val">{resumen.count("Ausente")}</div></div>
+        <div style="text-align: center;"><b>SAF</b><br><div class="stat-val">{resumen.count("SAF")}</div></div>
     </div>
 """, unsafe_allow_html=True)
 
