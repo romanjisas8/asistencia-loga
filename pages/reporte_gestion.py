@@ -35,19 +35,31 @@ def cargar_asistencias():
     data = []
     for row in all_results:
         p = row["properties"]
+        
+        # 1. Extraer Fecha (Si no hay, ignoramos)
         fecha = p.get("Fecha", {}).get("date", {}).get("start") if p.get("Fecha", {}).get("date") else None
-        # Si no hay fecha, ignoramos este registro de asistencia porque no es válido para estadística
         if not fecha: continue 
             
+        # 2. Extraer División (Soporte para Select y Rollup)
         div = "S/D"
         p_div = p.get("División", {})
-        if p_div.get("type") == "select": div = (p_div.get("select") or {}).get("name", "S/D")
+        if p_div.get("type") == "select":
+            div = (p_div.get("select") or {}).get("name", "S/D")
         elif p_div.get("type") == "rollup":
-            arr = p_div.get("rollup", {}).get("array", [])
-            if arr: div = (arr[0].get("select") or {}).get("name", "S/D")
+            rollup_val = p_div.get("rollup", {}).get("array", [])
+            if rollup_val and len(rollup_val) > 0:
+                # Intentamos sacar el nombre del primer elemento del rollup
+                div = rollup_val[0].get("select", {}).get("name", "S/D")
         
+        # 3. Extraer Asistencia
         asistencia = (p.get("Asistencia", {}).get("select") or {}).get("name", "Sin marcar")
-        j_id = p.get("Jugador", {}).get("relation", [{}])[0].get("id", "Desconocido")
+        
+        # 4. Extraer Jugador (SOLUCIÓN AL ERROR INDEXERROR)
+        j_rel = p.get("Jugador", {}).get("relation", [])
+        if not j_rel: # Si no hay relación, ignoramos la fila o ponemos Desconocido
+            j_id = "Sin Vinculo"
+        else:
+            j_id = j_rel[0].get("id", "Desconocido")
             
         data.append({"Fecha": fecha, "Asistencia": asistencia, "División": div, "JugadorID": j_id})
     return pd.DataFrame(data)
@@ -59,31 +71,29 @@ df = cargar_asistencias()
 
 if not df.empty:
     divs = sorted(df['División'].unique())
-    div_elegida = st.sidebar.selectbox("División", options=divs)
+    div_elegida = st.sidebar.selectbox("Seleccionar División", options=divs)
     df_div = df[df['División'] == div_elegida].copy()
     
     if not df_div.empty:
-        # Conversión segura de fecha
         df_div['Fecha'] = pd.to_datetime(df_div['Fecha'])
         df_div['Jugador'] = df_div['JugadorID'].map(maestro).fillna("Desconocido")
 
-        # Métricas
         c1, c2, c3 = st.columns(3)
         c1.metric("Entrenamientos", df_div['Fecha'].nunique())
         presents = len(df_div[df_div['Asistencia']=='Presente'])
         c2.metric("Promedio Asistencia", f"{(presents/len(df_div)*100):.1f}%" if len(df_div)>0 else "0%")
-        c3.metric("Jugadores con Datos", df_div['JugadorID'].nunique())
+        c3.metric("Jugadores Registrados", df_div['JugadorID'].nunique())
 
-        # Gráfico
+        # Gráfico de asistencia por día
         tendencia = df_div[df_div['Asistencia']=='Presente'].groupby('Fecha').size().reset_index(name='P')
         if not tendencia.empty:
-            st.plotly_chart(px.bar(tendencia, x='Fecha', y='P', title="Asistencia por Día"), use_container_width=True)
+            st.plotly_chart(px.bar(tendencia, x='Fecha', y='P', title=f"Asistencia Diaria - {div_elegida}", color_discrete_sequence=['#ff4b4b']), use_container_width=True)
 
-        # Ranking
-        st.subheader("Ranking de Asistencia")
-        ranking = df_div[df_div['Asistencia']=='Presente'].groupby('Jugador').size().sort_values(ascending=False).reset_index(name='Días Presente')
-        st.table(ranking)
+        # Ranking de los más cumplidores
+        st.subheader(f"Ranking de Compromiso ({div_elegida})")
+        ranking = df_div[df_div['Asistencia']=='Presente'].groupby('Jugador').size().sort_values(ascending=False).reset_index(name='Presencias')
+        st.dataframe(ranking, use_container_width=True)
     else:
-        st.info(f"No hay registros de asistencia cargados para la división {div_elegida}.")
+        st.info(f"No hay registros completos para la división {div_elegida}.")
 else:
-    st.warning("No se encontraron datos de asistencia en Notion. ¡Comienza cargando una hoy!")
+    st.warning("No se encontraron datos válidos en Notion.")
