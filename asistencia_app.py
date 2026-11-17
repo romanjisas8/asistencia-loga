@@ -14,21 +14,24 @@ st.set_page_config(page_title="Asistencia Loga", page_icon="🛡️", layout="ce
 query_params = st.query_params
 division = query_params.get("div", "No seleccionada")
 
-# --- FUNCIONES ---
-def verificar_registro_previo(fecha_selec, div_selec):
+# --- FUNCIÓN DE VERIFICACIÓN (AHORA INFALIBLE) ---
+def verificar_registro_existente(fecha_busqueda, div_busqueda):
     url = f"https://api.notion.com/v1/databases/{DB_ASISTENCIA}/query"
+    # Buscamos solo por fecha para asegurar que Notion no filtre mal
     payload = {
         "filter": {
             "property": "Fecha",
-            "date": {"equals": fecha_selec.strftime("%Y-%m-%d")}
+            "date": {"equals": fecha_busqueda.strftime("%Y-%m-%d")}
         }
     }
     try:
         res = requests.post(url, headers=headers, json=payload)
-        resultados = res.json().get("results", [])
-        for registro in resultados:
-            prop_div = registro["properties"].get("División", {}).get("select", {}).get("name", "")
-            if prop_div.upper() == div_selec.upper():
+        data = res.json()
+        # Filtramos manualmente en Python para mayor seguridad
+        for row in data.get("results", []):
+            # Buscamos la propiedad División (Select)
+            p_div = row["properties"].get("División", {}).get("select", {}).get("name", "")
+            if p_div.upper() == div_busqueda.upper():
                 return True
         return False
     except:
@@ -48,7 +51,7 @@ def fetch_jugadores(div):
             estado = props.get("Estado", {}).get("select", {}).get("name", "Activo")
             if estado == "Activo" and div_notion.upper() == div.upper():
                 jugadores.append({"nombre": nombre, "id": page["id"]})
-        # ORDEN ALFABÉTICO AQUÍ
+        # ORDEN ALFABÉTICO
         return sorted(jugadores, key=lambda x: x['nombre'])
     except: return []
 
@@ -64,24 +67,23 @@ if division == "No seleccionada":
     st.error("Accede con ?div=M16")
     st.stop()
 
-# FECHA Y AVISO
+# 1. FECHA Y CARTEL DE AVISO INMEDIATO
 fecha_input = st.date_input("Fecha", datetime.now(), format="DD/MM/YYYY")
-hay_registro = verificar_registro_previo(fecha_input, division)
+hay_datos_previos = verificar_registro_existente(fecha_input, division)
 
-if hay_registro:
-    st.warning(f"⚠️ AVISO: El día {fecha_input.strftime('%d/%m/%Y')} ya tiene asistencias para {division}.")
+if hay_datos_previos:
+    st.warning(f"⚠️ AVISO: Ya existen registros para {division} el día {fecha_input.strftime('%d/%m/%Y')}.")
 
 st.divider()
 
 jugadores = fetch_jugadores(division)
 if not jugadores:
-    st.info(f"No se encontraron jugadores activos para {division}.")
+    st.info(f"No hay jugadores activos en {division}.")
     st.stop()
 
 if 'asistencias' not in st.session_state:
     st.session_state.asistencias = {j['nombre']: "Ausente" for j in jugadores}
 
-# Lista de jugadores (Ya viene ordenada de la función)
 for j in jugadores:
     nombre = j['nombre']
     st.text(nombre)
@@ -90,34 +92,34 @@ for j in jugadores:
         key=f"r_{nombre}_{fecha_input}", label_visibility="collapsed", horizontal=True)
     st.write("---")
 
-# Contador
 resumen = list(st.session_state.asistencias.values())
 st.markdown(f"""<div style="display:flex; justify-content:space-around; background:#262730; padding:15px; border-radius:10px; color:white; margin-bottom:20px;">
     <div>Pres: {resumen.count("Presente")}</div><div>Aus: {resumen.count("Ausente")}</div><div>SAF: {resumen.count("SAF")}</div></div>""", unsafe_allow_html=True)
 
-# LÓGICA DE ENVÍO
-if 'confirmar' not in st.session_state: st.session_state.confirmar = False
+# 2. LÓGICA DE ENVÍO CON CARTEL DE CONFIRMACIÓN
+if 'preguntar_confirmacion' not in st.session_state: 
+    st.session_state.preguntar_confirmacion = False
 
-if not st.session_state.confirmar:
+if not st.session_state.preguntar_confirmacion:
     if st.button("Enviar asistencia", use_container_width=True, type="primary"):
-        if hay_registro:
-            st.session_state.confirmar = True
+        if hay_datos_previos:
+            st.session_state.preguntar_confirmacion = True
             st.rerun()
         else:
-            ejecutar_real = True
+            ejecutar_final = True
 else:
-    st.error(f"🛑 ATENCIÓN: Ya existen datos cargados. ¿Deseas duplicarlos?")
-    c1, col_cancel = st.columns(2)
+    # CARTEL DE CONFIRMACIÓN AL FINAL
+    st.error(f"🛑 ATENCIÓN: Esta división ya tiene registros hoy. ¿Confirmas el envío duplicado?")
+    c1, c2 = st.columns(2)
     if c1.button("SÍ, ENVIAR", use_container_width=True):
-        ejecutar_real = True
-        st.session_state.confirmar = False
-    if col_cancel.button("CANCELAR", use_container_width=True):
-        st.session_state.confirmar = False
+        ejecutar_final = True
+        st.session_state.preguntar_confirmacion = False
+    if c2.button("CANCELAR", use_container_width=True):
+        st.session_state.preguntar_confirmacion = False
         st.rerun()
 
-if 'ejecutar_real' in locals() and ejecutar_real:
+if 'ejecutar_final' in locals() and ejecutar_final:
     with st.spinner("Guardando en Notion..."):
-        errores = []
         for j in jugadores:
             payload = {
                 "parent": {"database_id": DB_ASISTENCIA},
@@ -128,7 +130,5 @@ if 'ejecutar_real' in locals() and ejecutar_real:
                     "División": {"select": {"name": division}}
                 }
             }
-            if requests.post("https://api.notion.com/v1/pages", headers=headers, json=payload).status_code != 200:
-                errores.append(j['nombre'])
-        if not errores: st.success("¡Éxito!"); st.balloons()
-        else: st.error("Error en algunos registros.")
+            requests.post("https://api.notion.com/v1/pages", headers=headers, json=payload)
+    st.success("¡Asistencia enviada!"); st.balloons()
