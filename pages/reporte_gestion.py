@@ -67,12 +67,16 @@ if not df_raw.empty:
         df_div['Jugador'] = df_div['JugadorID'].map(maestro).fillna("Desconocido")
 
         # --- CÁLCULO DE MÉTRICAS ---
-        entrenamientos_fechas = df_div['Fecha'].unique()
-        presents_df = df_div[df_div['Asistencia'] == 'Presente'].groupby('Fecha').size().reset_index(name='P')
-        # Asignar número de entrenamiento (1, 2, 3...)
-        presents_df['Nro'] = range(1, len(presents_df) + 1)
+        fechas_entrenamiento = sorted(df_div['Fecha'].unique())
+        mapa_nros = {fecha: i + 1 for i, fecha in enumerate(fechas_entrenamiento)}
         
-        entrenamientos = len(entrenamientos_fechas)
+        # DataFrame para el gráfico apilado (Presentes y SAF)
+        presents_saf_df = df_div[df_div['Asistencia'].isin(['Presente', 'SAF'])].groupby(['Fecha', 'Asistencia']).size().reset_index(name='Cantidad')
+        presents_saf_df['Nro'] = presents_saf_df['Fecha'].map(mapa_nros)
+        # Formatear fecha para la etiqueta
+        presents_saf_df['Fecha_Label'] = presents_saf_df['Fecha'].dt.strftime('%d/%m/%Y')
+
+        entrenamientos = len(fechas_entrenamiento)
         presentes_totales = len(df_div[df_div['Asistencia']=='Presente'])
 
         col_metrics, col_pie = st.columns([2, 1])
@@ -95,26 +99,31 @@ if not df_raw.empty:
         st.divider()
 
         # --- GRÁFICOS DE TENDENCIA ---
-        st.subheader("Tendencia de Asistencia (Presentes)")
+        st.subheader("Tendencia de Asistencia (Presentes y SAF)")
         tab1, tab2 = st.tabs(["Histórico Anual", "Detalle Último Mes"])
 
         with tab1:
-            # Gráfico Anual por Nro de entrenamiento
-            fig_anual = px.bar(presents_df, x='Nro', y='P', 
+            # Gráfico Anual APILADO
+            fig_anual = px.bar(presents_saf_df, x='Nro', y='Cantidad', color='Asistencia',
                                title=f"Evolución Anual - {div_elegida}",
-                               labels={'Nro': 'Nro de Entrenamiento', 'P': 'Presentes'},
-                               color_discrete_sequence=['#800000'])
+                               labels={'Nro': 'Nro de Entrenamiento', 'Cantidad': 'Jugadores'},
+                               color_discrete_map={'Presente': '#800000', 'SAF': '#1a237e'},
+                               hover_data={'Nro': True, 'Asistencia': True, 'Cantidad': True, 'Fecha_Label': True})
+            
+            # Personalizar la etiqueta de la fecha en el hover
+            fig_anual.update_traces(hovertemplate="<b>Entrenamiento %{x}</b><br>Fecha: %{customdata[0]}<br>Estado: %{fullData.name}<br>Cantidad: %{y}<extra></extra>",
+                                    customdata=presents_saf_df[['Fecha_Label']])
+            
             st.plotly_chart(fig_anual, use_container_width=True)
 
         with tab2:
-            # Filtrar último mes
             fecha_limite = datetime.now() - timedelta(days=30)
-            presents_mes = presents_df[presents_df['Fecha'] >= fecha_limite]
-            if not presents_mes.empty:
-                fig_mes = px.bar(presents_mes, x='Fecha', y='P', 
+            df_mes = presents_saf_df[presents_saf_df['Fecha'] >= fecha_limite]
+            if not df_mes.empty:
+                fig_mes = px.bar(df_mes, x='Fecha', y='Cantidad', color='Asistencia',
                                  title="Detalle de los últimos 30 días",
-                                 labels={'Fecha': 'Día', 'P': 'Presentes'},
-                                 color_discrete_sequence=['#800000'])
+                                 labels={'Fecha': 'Día', 'Cantidad': 'Jugadores'},
+                                 color_discrete_map={'Presente': '#800000', 'SAF': '#1a237e'})
                 st.plotly_chart(fig_mes, use_container_width=True)
             else:
                 st.info("No hay entrenamientos en los últimos 30 días.")
