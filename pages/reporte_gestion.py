@@ -35,58 +35,54 @@ def cargar_asistencias_filtradas(jugadores_activos):
     data = []
     for row in all_results:
         p = row["properties"]
-        # Seguridad: Solo procesar filas con Jugador vinculado
         j_rel = p.get("Jugador", {}).get("relation", [])
         if not j_rel: continue
-        
         j_id = j_rel[0].get("id")
         
-        # Filtrar solo jugadores activos
         if j_id in jugadores_activos:
-            fecha_raw = p.get("Fecha", {}).get("date", {}).get("start")
-            if not fecha_raw: continue
-            
+            fecha = p.get("Fecha", {}).get("date", {}).get("start")
+            if not fecha: continue
             div = (p.get("División", {}).get("select") or {}).get("name", "S/D")
             asistencia = (p.get("Asistencia", {}).get("select") or {}).get("name", "Sin marcar")
-            
-            data.append({"Fecha": fecha_raw, "Asistencia": asistencia, "División": div, "Jugador": jugadores_activos[j_id]})
+            data.append({"Fecha": fecha, "Asistencia": asistencia, "División": div, "Jugador": jugadores_activos[j_id]})
     return pd.DataFrame(data)
 
 st.title("🛡️ Gestión por División")
-
 maestro = cargar_maestro_jugadores()
-df_raw = cargar_asistencias_filtradas(maestro)
+df_div = cargar_asistencias_filtradas(maestro)
 
-if not df_raw.empty:
-    divs = sorted(df_raw['División'].unique())
+if not df_div.empty:
+    divs = sorted(df_div['División'].unique())
     div_elegida = st.sidebar.selectbox("Seleccionar División", options=divs)
-    df_div = df_raw[df_raw['División'] == div_elegida].copy()
+    df_div = df_div[df_div['División'] == div_elegida].copy()
     
     if not df_div.empty:
         df_div['Fecha'] = pd.to_datetime(df_div['Fecha'], errors='coerce')
         df_div = df_div.dropna(subset=['Fecha'])
 
+        # Cálculos de colores
+        presents_count = len(df_div[df_div['Asistencia']=='Presente'])
+        ausents_count = len(df_div[df_div['Asistencia']=='Ausente'])
+        saf_count = len(df_div[df_div['Asistencia']=='SAF'])
         entrenamientos = df_div['Fecha'].nunique()
-        df_presentes = df_div[df_div['Asistencia']=='Presente']
-        df_ausentes = df_div[df_div['Asistencia']=='Ausente']
-        df_saf = df_div[df_div['Asistencia']=='SAF']
-        
-        total_marcas = len(df_presentes) + len(df_ausentes) + len(df_saf)
+        total_validos = presents_count + ausents_count + saf_count
 
         c1, c2 = st.columns(2)
         c1.metric("Entrenamientos", entrenamientos)
-        c2.metric("Promedio Asistencia", f"{(len(df_presentes)/total_marcas*100):.1f}%" if total_marcas > 0 else "0%")
+        c2.metric("Promedio Asistencia", f"{(presents_count/total_validos*100):.1f}%" if total_validos > 0 else "0%")
 
-        pie_data = pd.DataFrame({'Estado': ['Presente', 'Ausente', 'SAF'], 
-                                 'Cantidad': [len(df_presentes), len(df_ausentes), len(df_saf)]})
+        # Gráfico Pie con colores del club
+        pie_data = pd.DataFrame({'Estado': ['Presente', 'Ausente', 'SAF'], 'Cantidad': [presents_count, ausents_count, saf_count]})
         fig = px.pie(pie_data, values='Cantidad', names='Estado', hole=0.5, 
-                     color_discrete_map={'Presente': '#800000', 'Ausente': '#1a237e', 'SAF': '#FFFFFF'})
+                     color='Estado', color_discrete_map={'Presente': '#800000', 'Ausente': '#1a237e', 'SAF': '#FFFFFF'})
         st.plotly_chart(fig)
         
+        # Gráfico Barras Tendencia
+        st.subheader("Tendencia de Asistencia")
+        tendencia = df_div[df_div['Asistencia'].isin(['Presente', 'SAF'])].groupby(['Fecha', 'Asistencia']).size().unstack(fill_value=0).reset_index()
+        fig_bar = px.bar(tendencia, x='Fecha', y=['Presente', 'SAF'], color_discrete_map={'Presente': '#800000', 'SAF': '#1a237e'})
+        st.plotly_chart(fig_bar, use_container_width=True)
+        
         st.subheader("Ranking")
-        ranking = df_presentes.groupby('Jugador').size().sort_values(ascending=False).reset_index(name='Presencias')
+        ranking = df_div[df_div['Asistencia']=='Presente'].groupby('Jugador').size().sort_values(ascending=False).reset_index(name='Presencias')
         st.dataframe(ranking, use_container_width=True)
-    else:
-        st.info("No hay registros para esta división.")
-else:
-    st.warning("No hay datos de asistencia.")
