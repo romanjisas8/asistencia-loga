@@ -4,7 +4,6 @@ import pandas as pd
 import plotly.express as px
 from datetime import datetime
 
-# Configuración (Usa tus secretos)
 TOKEN = st.secrets["NOTION_TOKEN"]
 DB_ASISTENCIA = st.secrets["DB_ASISTENCIA"]
 DB_JUGADORES = st.secrets["DB_JUGADORES"]
@@ -39,10 +38,19 @@ def cargar_asistencias():
         p = row["properties"]
         fecha_raw = p.get("Fecha", {}).get("date", {}).get("start") if p.get("Fecha", {}).get("date") else None
         if not fecha_raw: continue 
+            
+        div = "S/D"
+        p_div = p.get("División", {})
+        if p_div.get("type") == "select": div = (p_div.get("select") or {}).get("name", "S/D")
+        elif p_div.get("type") == "rollup":
+            arr = p_div.get("rollup", {}).get("array", [])
+            if arr: div = (arr[0].get("select") or {}).get("name", "S/D")
         
-        div = (p.get("División", {}).get("select") or {}).get("name", "S/D")
         asistencia = (p.get("Asistencia", {}).get("select") or {}).get("name", "Sin marcar")
-        j_id = p.get("Jugador", {}).get("relation", [{}])[0].get("id", "Sin Vinculo")
+        
+        # --- CORRECCIÓN SEGURA ---
+        j_rel = p.get("Jugador", {}).get("relation", [])
+        j_id = j_rel[0].get("id", "Sin Vinculo") if len(j_rel) > 0 else "Sin Vinculo"
             
         data.append({"Fecha": fecha_raw, "Asistencia": asistencia, "División": div, "JugadorID": j_id})
     return pd.DataFrame(data)
@@ -60,8 +68,9 @@ if not df_raw.empty:
     if not df_div.empty:
         df_div['Fecha'] = pd.to_datetime(df_div['Fecha'], errors='coerce')
         df_div = df_div.dropna(subset=['Fecha']).sort_values('Fecha')
-        
-        # Conteo total basado en fechas únicas reales
+        df_div['Jugador'] = df_div['JugadorID'].map(maestro).fillna("Desconocido")
+
+        # Métricas
         entrenamientos = df_div['Fecha'].nunique()
         presentes_totales = len(df_div[df_div['Asistencia']=='Presente'])
 
@@ -69,19 +78,30 @@ if not df_raw.empty:
         with col_metrics:
             st.subheader(f"Resumen General: {div_elegida}")
             m1, m2 = st.columns(2)
-            m1.metric("Total Entrenamientos", entrenamientos)
+            m1.metric("Entrenamientos", entrenamientos)
             m1.metric("Jugadores en Base", df_div['JugadorID'].nunique())
             m2.metric("Promedio Asistencia (%)", f"{(presentes_totales/len(df_div)*100):.1f}%")
             m2.metric("Promedio Presentes/Día", f"{(presentes_totales / entrenamientos):.1f}" if entrenamientos > 0 else "0")
 
         with col_pie:
             pie_data = df_div['Asistencia'].value_counts().reset_index()
-            fig_pie = px.pie(pie_data, names='Asistencia', values='count', hole=0.5, 
-                             color='Asistencia', color_discrete_map={'Presente': '#800000', 'Ausente': '#1a237e', 'SAF': '#FFFFFF'})
+            pie_data.columns = ['Estado', 'Cantidad']
+            fig_pie = px.pie(pie_data, values='Cantidad', names='Estado', hole=0.5, 
+                             color='Estado', color_discrete_map={'Presente': '#800000', 'Ausente': '#1a237e', 'SAF': '#FFFFFF'})
+            fig_pie.update_layout(showlegend=True, margin=dict(t=0, b=0, l=0, r=0))
             st.plotly_chart(fig_pie, use_container_width=True)
 
         st.divider()
         st.subheader("Tendencia de Asistencia")
         resumen_diario = df_div.groupby(['Fecha', 'Asistencia']).size().unstack(fill_value=0).reset_index()
-        fig = px.bar(resumen_diario, x='Fecha', y=['Presente', 'SAF'], title=f"Evolución {div_elegida}", color_discrete_map={'Presente': '#800000', 'SAF': '#1a237e'})
+        fig = px.bar(resumen_diario, x='Fecha', y=['Presente', 'SAF'], title="Asistencia Diaria", color_discrete_map={'Presente': '#800000', 'SAF': '#1a237e'})
         st.plotly_chart(fig, use_container_width=True)
+
+        st.subheader("Ranking de Compromiso")
+        ranking = df_div[df_div['Asistencia']=='Presente'].groupby('Jugador').size().sort_values(ascending=False).reset_index(name='Presencias')
+        ranking['% Asistencia'] = (ranking['Presencias'] / entrenamientos * 100).map('{:,.1f}%'.format)
+        st.dataframe(ranking, use_container_width=True)
+    else:
+        st.info(f"No hay registros válidos para {div_elegida}.")
+else:
+    st.warning("Cargando datos de Notion...")
