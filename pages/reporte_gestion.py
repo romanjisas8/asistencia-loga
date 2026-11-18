@@ -2,6 +2,7 @@ import streamlit as st
 import requests
 import pandas as pd
 import plotly.express as px
+from datetime import datetime, timedelta
 
 TOKEN = st.secrets["NOTION_TOKEN"]
 DB_ASISTENCIA = st.secrets["DB_ASISTENCIA"]
@@ -50,17 +51,14 @@ def cargar_asistencias_activos(jugadores_activos):
     for row in all_results:
         p = row["properties"]
 
-        # --- Solo procesar si el jugador está en la lista de activos ---
         j_rel = p.get("Jugador", {}).get("relation", [])
         if not j_rel: continue
         j_id = j_rel[0].get("id")
         if j_id not in jugadores_activos: continue
 
-        # --- Fecha ---
         fecha_raw = p.get("Fecha", {}).get("date", {}).get("start")
         if not fecha_raw: continue
 
-        # --- División (Rollup o Select) ---
         div = "S/D"
         p_div = p.get("División", {})
         if p_div.get("type") == "select":
@@ -68,14 +66,12 @@ def cargar_asistencias_activos(jugadores_activos):
         elif p_div.get("type") == "rollup":
             arr = p_div.get("rollup", {}).get("array", [])
             if arr:
-                # Algunos rollups tienen un nivel extra
                 for item in arr:
                     nombre_div = item.get("select", {}).get("name")
                     if nombre_div:
                         div = nombre_div
                         break
 
-        # --- Asistencia ---
         asistencia = (p.get("Asistencia", {}).get("select") or {}).get("name", "Sin marcar")
 
         data.append({
@@ -108,13 +104,7 @@ if not df_raw.empty:
         fechas_ordenadas = sorted(df_div['Fecha'].unique())
         mapa_nros = {f: i + 1 for i, f in enumerate(fechas_ordenadas)}
 
-        # --- Procesamiento para el gráfico (solo días con actividad) ---
-        actividad_df = df_div[df_div['Asistencia'].isin(['Presente', 'SAF'])]
-        presents_saf_df = actividad_df.groupby(['Fecha', 'Asistencia']).size().reset_index(name='Cantidad')
-        presents_saf_df['Nro'] = presents_saf_df['Fecha'].map(mapa_nros)
-        presents_saf_df['Fecha_Str'] = presents_saf_df['Fecha'].dt.strftime('%d/%m/%Y')
-
-        # --- Métricas ---
+        # --- Métricas Generales ---
         presentes_totales = len(df_div[df_div['Asistencia'] == 'Presente'])
         total_validos = len(df_div[df_div['Asistencia'].isin(['Presente', 'Ausente', 'SAF'])])
 
@@ -124,7 +114,7 @@ if not df_raw.empty:
             m1, m2 = st.columns(2)
             m1.metric("Total Entrenamientos", entrenamientos)
             m1.metric("Jugadores en Base", df_div['JugadorID'].nunique())
-            m2.metric("Promedio Asistencia (%)", f"{(presentes_totales / total_validos * 100):.1f}%" if total_validos > 0 else "0%")
+            m2.metric("Asistencia Global (%)", f"{(presentes_totales / total_validos * 100):.1f}%" if total_validos > 0 else "0%")
             m2.metric("Promedio Presentes/Día", f"{(presentes_totales / entrenamientos):.1f}" if entrenamientos > 0 else "0")
 
         with col_pie:
@@ -140,11 +130,68 @@ if not df_raw.empty:
 
         st.divider()
 
-        # --- Gráfico de barras (SAF abajo) ---
-        st.subheader("Tendencia de Asistencia (Presentes y SAF)")
+        # === 4. CÁLCULO ESTADÍSTICO POR JUGADOR (COMO NOTION) ===
+        df_valid = df_div[df_div['Asistencia'].isin(['Presente', 'Ausente', 'SAF'])]
+        
+        # Agrupamos por Jugador y contamos Presente, Ausente, SAF
+        stats_jugador = df_valid.groupby(['Jugador', 'Asistencia']).size().unstack(fill_value=0).reset_index()
+        
+        # Asegurarnos de que las columnas existan
+        for col in ['Presente', 'Ausente', 'SAF']:
+            if col not in stats_jugador.columns:
+                stats_jugador[col] = 0
+                
+        # Total de registros reales DEL JUGADOR (no de la división)
+        stats_jugador['Total_Registros'] = stats_jugador['Presente'] + stats_jugador['Ausente'] + stats_jugador['SAF']
+        
+        # Porcentaje real individual
+        stats_jugador['% Asistencia'] = stats_jugador.apply(
+            lambda x: (x['Presente'] / x['Total_Registros'] * 100) if x['Total_Registros'] > 0 else 0, axis=1
+        )
+
+        # === GRÁFICO: % ASISTENCIA POR JUGADOR (Como tu foto 1) ===
+        st.subheader("Porcentaje de Asistencia por Jugador")
+        stats_ordenado = stats_jugador.sort_values('% Asistencia', ascending=False)
+        fig_pct = px.bar(
+            stats_ordenado, x='Jugador', y='% Asistencia', text_auto='.1f',
+            color_discrete_sequence=['#2ecc71'] # Verde similar a Notion
+        )
+        fig_pct.update_traces(texttemplate='%{y:.1f}%', textposition='outside')
+        fig_pct.update_layout(yaxis_title="% Asistencia", xaxis_title="Jugador", margin=dict(t=20))
+        st.plotly_chart(fig_pct, use_container_width=True)
+
+        st.divider()
+
+        # === GRÁFICO: AUSENTES ÚLTIMO MES (Como tu foto 2) ===
+        st.subheader("Ausencias en el Último Mes")
+        fecha_hace_un_mes = datetime.now() - timedelta(days=30)
+        df_ultimo_mes = df_valid[df_valid['Fecha'] >= fecha_hace_un_mes]
+        
+        ausentes_mes = df_ultimo_mes[df_ultimo_mes['Asistencia'] == 'Ausente'].groupby('Jugador').size().reset_index(name='Ausencias')
+        if not ausentes_mes.empty:
+            # Ordenamos ascendente para que Plotly ponga al mayor arriba en barras horizontales
+            ausentes_mes = ausentes_mes.sort_values('Ausencias', ascending=True) 
+            fig_aus = px.bar(
+                ausentes_mes, x='Ausencias', y='Jugador', orientation='h', text='Ausencias',
+                color_discrete_sequence=['#3498db'] # Azul similar a Notion
+            )
+            fig_aus.update_traces(textposition='outside')
+            fig_aus.update_layout(xaxis_title="Cantidad de Ausencias", yaxis_title="", margin=dict(t=20))
+            st.plotly_chart(fig_aus, use_container_width=True)
+        else:
+            st.success("¡Excelente! No hay ausencias registradas en los últimos 30 días.")
+
+        st.divider()
+
+        # --- Gráfico de evolución anual (SAF abajo, Presentes arriba) ---
+        st.subheader("Evolución de Entrenamientos")
+        actividad_df = df_div[df_div['Asistencia'].isin(['Presente', 'SAF'])]
+        presents_saf_df = actividad_df.groupby(['Fecha', 'Asistencia']).size().reset_index(name='Cantidad')
+        presents_saf_df['Nro'] = presents_saf_df['Fecha'].map(mapa_nros)
+        presents_saf_df['Fecha_Str'] = presents_saf_df['Fecha'].dt.strftime('%d/%m/%Y')
+
         fig_anual = px.bar(
             presents_saf_df, x='Nro', y='Cantidad', color='Asistencia',
-            title=f"Evolución {div_elegida}",
             labels={'Nro': 'Entrenamiento', 'Cantidad': 'Jugadores'},
             color_discrete_map={'Presente': '#800000', 'SAF': '#1a237e'},
             category_orders={"Asistencia": ["SAF", "Presente"]},
@@ -152,19 +199,6 @@ if not df_raw.empty:
         )
         fig_anual.update_layout(barmode='stack', hovermode="x unified")
         st.plotly_chart(fig_anual, use_container_width=True)
-
-        # --- Ranking ---
-        st.subheader("Ranking de Compromiso")
-        ranking = (
-            df_div[df_div['Asistencia'] == 'Presente']
-            .groupby('Jugador')
-            .size()
-            .sort_values(ascending=False)
-            .reset_index(name='Presencias')
-        )
-        ranking['% Asistencia'] = (ranking['Presencias'] / entrenamientos * 100).map('{:,.1f}%'.format)
-        ranking['Presencias'] = ranking['Presencias'].astype(int)
-        st.dataframe(ranking, use_container_width=True)
 
     else:
         st.info(f"No hay registros para la división {div_elegida}.")
