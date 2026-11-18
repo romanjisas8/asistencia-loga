@@ -2,8 +2,9 @@ import streamlit as st
 import requests
 import pandas as pd
 import plotly.express as px
-from datetime import datetime
+from datetime import datetime, timedelta
 
+# Configuración (Secretos de Streamlit Cloud)
 TOKEN = st.secrets["NOTION_TOKEN"]
 DB_ASISTENCIA = st.secrets["DB_ASISTENCIA"]
 DB_JUGADORES = st.secrets["DB_JUGADORES"]
@@ -36,10 +37,9 @@ def cargar_asistencias():
     data = []
     for row in all_results:
         p = row["properties"]
-        # LEEMOS LA PROPIEDAD "Fecha" (La única que importa)
-        fecha_notion = p.get("Fecha", {}).get("date", {}).get("start")
-        if not fecha_notion: continue 
-            
+        fecha_raw = p.get("Fecha", {}).get("date", {}).get("start") if p.get("Fecha", {}).get("date") else None
+        if not fecha_raw: continue 
+        
         div = "S/D"
         p_div = p.get("División", {})
         if p_div.get("type") == "select": div = (p_div.get("select") or {}).get("name", "S/D")
@@ -48,9 +48,9 @@ def cargar_asistencias():
             if arr: div = (arr[0].get("select") or {}).get("name", "S/D")
         
         asistencia = (p.get("Asistencia", {}).get("select") or {}).get("name", "Sin marcar")
-        j_id = p.get("Jugador", {}).get("relation", [{}])[0].get("id", "Desconocido")
-            
-        data.append({"Fecha": fecha_notion, "Asistencia": asistencia, "División": div, "JugadorID": j_id})
+        j_rel = p.get("Jugador", {}).get("relation", [])
+        j_id = j_rel[0].get("id", "Desconocido") if j_rel else "Sin Vinculo"
+        data.append({"Fecha": fecha_raw, "Asistencia": asistencia, "División": div, "JugadorID": j_id})
     return pd.DataFrame(data)
 
 st.title("🛡️ Gestión por División")
@@ -68,36 +68,56 @@ if not df_raw.empty:
         df_div = df_div.dropna(subset=['Fecha']).sort_values('Fecha')
         df_div['Jugador'] = df_div['JugadorID'].map(maestro).fillna("Desconocido")
 
-        # El total de entrenamientos ahora se basa estrictamente en los días únicos de la columna Fecha
-        fechas_unicas = sorted(df_div['Fecha'].unique())
-        entrenamientos = len(fechas_unicas)
-        mapa_nros = {f: i + 1 for i, f in enumerate(fechas_unicas)}
+        # --- PROCESAMIENTO PARA EL GRÁFICO ---
+        actividad_df = df_div[df_div['Asistencia'].isin(['Presente', 'SAF'])]
+        fechas_reales = sorted(actividad_df['Fecha'].unique())
+        mapa_nros = {fecha: i + 1 for i, fecha in enumerate(fechas_reales)}
         
+        presents_saf_df = actividad_df.groupby(['Fecha', 'Asistencia']).size().reset_index(name='Cantidad')
+        presents_saf_df['Nro'] = presents_saf_df['Fecha'].map(mapa_nros)
+        presents_saf_df['Fecha_Str'] = presents_saf_df['Fecha'].dt.strftime('%d/%m/%Y')
+
+        # Métricas principales
+        entrenamientos = len(fechas_reales)
         presentes_totales = len(df_div[df_div['Asistencia']=='Presente'])
 
         col_metrics, col_pie = st.columns([2, 1])
         with col_metrics:
-            st.subheader(f"Resumen: {div_elegida}")
+            st.subheader(f"Resumen General: {div_elegida}")
             m1, m2 = st.columns(2)
-            m1.metric("Total Entrenamientos", entrenamientos)
+            m1.metric("Entrenamientos", entrenamientos)
             m1.metric("Jugadores en Base", df_div['JugadorID'].nunique())
-            m2.metric("Promedio Asistencia", f"{(presentes_totales/len(df_div)*100):.1f}%")
-            m2.metric("Promedio Presentes/Día", f"{(presentes_totales / entrenamientos):.1f}" if entrenamientos > 0 else "0")
+            m2.metric("Promedio Asistencia (%)", f"{(presentes_totales/len(df_div)*100):.1f}%")
+            m2.metric("Jugadores x Entrenamiento", f"{(presentes_totales / entrenamientos):.1f}" if entrenamientos > 0 else "0")
 
-        # Gráfico (Datos basados solo en propiedad Fecha)
-        presents_saf_df = df_div[df_div['Asistencia'].isin(['Presente', 'SAF'])].groupby(['Fecha', 'Asistencia']).size().reset_index(name='Cantidad')
-        presents_saf_df['Nro'] = presents_saf_df['Fecha'].map(mapa_nros)
-        presents_saf_df['Fecha_Str'] = presents_saf_df['Fecha'].dt.strftime('%d/%m/%Y')
-        presents_saf_df['Asistencia'] = pd.Categorical(presents_saf_df['Asistencia'], categories=['SAF', 'Presente'], ordered=True)
+        with col_pie:
+            pie_data = df_div['Asistencia'].value_counts().reset_index()
+            pie_data.columns = ['Estado', 'Cantidad']
+            fig_pie = px.pie(pie_data, values='Cantidad', names='Estado', hole=0.5, 
+                             color='Estado', color_discrete_map={'Presente': '#800000', 'Ausente': '#1a237e', 'SAF': '#FFFFFF'})
+            fig_pie.update_layout(showlegend=True, margin=dict(t=0, b=0, l=0, r=0))
+            st.plotly_chart(fig_pie, use_container_width=True)
 
-        fig_anual = px.bar(presents_saf_df.sort_values('Asistencia'), x='Nro', y='Cantidad', color='Asistencia',
-                           title=f"Evolución {div_elegida}",
+        st.divider()
+
+        # --- GRÁFICO ANUAL (FORZANDO SAF ABAJO) ---
+        st.subheader("Tendencia de Asistencia (Presentes y SAF)")
+        fig_anual = px.bar(presents_saf_df, x='Nro', y='Cantidad', color='Asistencia',
+                           title=f"Evolución Anual - {div_elegida}",
+                           labels={'Nro': 'Nro de Entrenamiento', 'Cantidad': 'Jugadores'},
                            color_discrete_map={'Presente': '#800000', 'SAF': '#1a237e'},
+                           category_orders={"Asistencia": ["SAF", "Presente"]}, # ESTO PONE SAF ABAJO
                            hover_data={'Fecha_Str': True, 'Nro': False})
         
         fig_anual.update_layout(barmode='stack', hovermode="x unified")
         st.plotly_chart(fig_anual, use_container_width=True)
 
-        st.subheader("Ranking")
+        # Ranking de Compromiso
+        st.subheader("Ranking de Compromiso")
         ranking = df_div[df_div['Asistencia']=='Presente'].groupby('Jugador').size().sort_values(ascending=False).reset_index(name='Presencias')
+        ranking['% Asistencia'] = (ranking['Presencias'] / entrenamientos * 100).map('{:,.1f}%'.format)
         st.dataframe(ranking, use_container_width=True)
+    else:
+        st.info(f"No hay registros para la división {div_elegida}.")
+else:
+    st.warning("Cargando datos de Notion... por favor espera.")
