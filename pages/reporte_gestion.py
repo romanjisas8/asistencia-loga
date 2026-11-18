@@ -35,28 +35,22 @@ def cargar_asistencias():
     data = []
     for row in all_results:
         p = row["properties"]
-        
-        # Extraer Fecha con validación estricta
         fecha_raw = p.get("Fecha", {}).get("date", {}).get("start") if p.get("Fecha", {}).get("date") else None
-        if not fecha_raw: continue # Ignorar filas sin fecha
+        if not fecha_raw: continue 
             
-        # Extraer División (Soporte Select/Rollup)
         div = "S/D"
         p_div = p.get("División", {})
         if p_div.get("type") == "select":
             div = (p_div.get("select") or {}).get("name", "S/D")
         elif p_div.get("type") == "rollup":
             rollup_val = p_div.get("rollup", {}).get("array", [])
-            if rollup_val:
-                div = rollup_val[0].get("select", {}).get("name", "S/D")
+            if rollup_val: div = rollup_val[0].get("select", {}).get("name", "S/D")
         
-        # Extraer Asistencia y Jugador con seguridad
         asistencia = (p.get("Asistencia", {}).get("select") or {}).get("name", "Sin marcar")
         j_rel = p.get("Jugador", {}).get("relation", [])
         j_id = j_rel[0].get("id", "Desconocido") if j_rel else "Sin Vinculo"
             
         data.append({"Fecha": fecha_raw, "Asistencia": asistencia, "División": div, "JugadorID": j_id})
-    
     return pd.DataFrame(data)
 
 st.title("🛡️ Gestión por División")
@@ -70,28 +64,49 @@ if not df.empty:
     df_div = df[df['División'] == div_elegida].copy()
     
     if not df_div.empty:
-        # CONVERSIÓN DE FECHA ULTRA-SEGURA (Ignora errores)
         df_div['Fecha'] = pd.to_datetime(df_div['Fecha'], errors='coerce')
-        df_div = df_div.dropna(subset=['Fecha']) # Borrar filas que no se pudieron convertir
-        
+        df_div = df_div.dropna(subset=['Fecha'])
         df_div['Jugador'] = df_div['JugadorID'].map(maestro).fillna("Desconocido")
 
-        c1, c2, c3 = st.columns(3)
-        c1.metric("Entrenamientos", df_div['Fecha'].nunique())
-        presents = len(df_div[df_div['Asistencia']=='Presente'])
-        c2.metric("Promedio Asistencia", f"{(presents/len(df_div)*100):.1f}%" if len(df_div)>0 else "0%")
-        c3.metric("Jugadores en Base", df_div['JugadorID'].nunique())
+        # --- SECCIÓN SUPERIOR: MÉTRICAS + ANILLO ---
+        col_metrics, col_pie = st.columns([2, 1])
+        
+        with col_metrics:
+            st.subheader(f"Resumen General: {div_elegida}")
+            m1, m2 = st.columns(2)
+            entrenamientos = df_div['Fecha'].nunique()
+            presents_count = len(df_div[df_div['Asistencia']=='Presente'])
+            m1.metric("Entrenamientos", entrenamientos)
+            m1.metric("Jugadores en Base", df_div['JugadorID'].nunique())
+            m2.metric("Promedio Asistencia", f"{(presents_count/len(df_div)*100):.1f}%")
+            m2.metric("Total de Marcaciones", len(df_div))
 
-        # Gráfico
+        with col_pie:
+            # Datos para el gráfico de anillo
+            pie_data = df_div['Asistencia'].value_counts().reset_index()
+            pie_data.columns = ['Estado', 'Cantidad']
+            
+            # Definimos los colores del club: Bordó (#800000) y Azul (#0000FF / #1a237e)
+            colores_club = {'Presente': '#800000', 'Ausente': '#1a237e', 'SAF': '#ffc107', 'Sin marcar': '#9e9e9e'}
+            
+            fig_pie = px.pie(pie_data, values='Cantidad', names='Estado', 
+                             hole=0.5, # Esto lo convierte en anillo
+                             color='Estado',
+                             color_discrete_map=colores_club)
+            fig_pie.update_layout(showlegend=True, margin=dict(t=0, b=0, l=0, r=0))
+            st.plotly_chart(fig_pie, use_container_width=True)
+
+        st.divider()
+
+        # Gráfico de barras de asistencia diaria
         tendencia = df_div[df_div['Asistencia']=='Presente'].groupby('Fecha').size().reset_index(name='P')
-        if not tendencia.empty:
-            st.plotly_chart(px.bar(tendencia, x='Fecha', y='P', title=f"Asistencia Diaria - {div_elegida}", color_discrete_sequence=['#ff4b4b']), use_container_width=True)
+        st.plotly_chart(px.bar(tendencia, x='Fecha', y='P', title=f"Asistencia Diaria (Presentes)", color_discrete_sequence=['#800000']), use_container_width=True)
 
         # Ranking
-        st.subheader(f"Ranking de Compromiso ({div_elegida})")
+        st.subheader("Ranking de Compromiso")
         ranking = df_div[df_div['Asistencia']=='Presente'].groupby('Jugador').size().sort_values(ascending=False).reset_index(name='Presencias')
+        # Calculamos el % individual
+        ranking['% Asistencia'] = (ranking['Presencias'] / entrenamientos * 100).map('{:,.1f}%'.format)
         st.dataframe(ranking, use_container_width=True)
     else:
         st.info(f"No hay registros para la división {div_elegida}.")
-else:
-    st.warning("Cargando datos... si esto persiste, verifica que haya asistencias cargadas en Notion.")
