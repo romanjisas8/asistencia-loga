@@ -40,11 +40,10 @@ def cargar_asistencias():
             
         div = "S/D"
         p_div = p.get("División", {})
-        if p_div.get("type") == "select":
-            div = (p_div.get("select") or {}).get("name", "S/D")
+        if p_div.get("type") == "select": div = (p_div.get("select") or {}).get("name", "S/D")
         elif p_div.get("type") == "rollup":
-            rollup_val = p_div.get("rollup", {}).get("array", [])
-            if rollup_val: div = rollup_val[0].get("select", {}).get("name", "S/D")
+            arr = p_div.get("rollup", {}).get("array", [])
+            if arr: div = (arr[0].get("select") or {}).get("name", "S/D")
         
         asistencia = (p.get("Asistencia", {}).get("select") or {}).get("name", "Sin marcar")
         j_rel = p.get("Jugador", {}).get("relation", [])
@@ -68,44 +67,41 @@ if not df.empty:
         df_div = df_div.dropna(subset=['Fecha'])
         df_div['Jugador'] = df_div['JugadorID'].map(maestro).fillna("Desconocido")
 
-        # --- SECCIÓN SUPERIOR: MÉTRICAS + ANILLO ---
+        # --- SECCIÓN SUPERIOR ---
         col_metrics, col_pie = st.columns([2, 1])
         
+        entrenamientos = df_div['Fecha'].nunique()
+        presentes_totales = len(df_div[df_div['Asistencia']=='Presente'])
+        promedio_jugadores_dia = (presentes_totales / entrenamientos) if entrenamientos > 0 else 0
+
         with col_metrics:
             st.subheader(f"Resumen General: {div_elegida}")
             m1, m2 = st.columns(2)
-            entrenamientos = df_div['Fecha'].nunique()
-            presents_count = len(df_div[df_div['Asistencia']=='Presente'])
             m1.metric("Entrenamientos", entrenamientos)
             m1.metric("Jugadores en Base", df_div['JugadorID'].nunique())
-            m2.metric("Promedio Asistencia", f"{(presents_count/len(df_div)*100):.1f}%")
-            m2.metric("Total de Marcaciones", len(df_div))
+            m2.metric("Promedio Asistencia (%)", f"{(presentes_totales/len(df_div)*100):.1f}%")
+            m2.metric("Jugadores x Entrenamiento", f"{promedio_jugadores_dia:.1f}")
 
         with col_pie:
-            # Datos para el gráfico de anillo
             pie_data = df_div['Asistencia'].value_counts().reset_index()
             pie_data.columns = ['Estado', 'Cantidad']
             
-            # Definimos los colores del club: Bordó (#800000) y Azul (#0000FF / #1a237e)
-            colores_club = {'Presente': '#800000', 'Ausente': '#1a237e', 'SAF': '#ffc107', 'Sin marcar': '#9e9e9e'}
+            # Cambiamos SAF a Blanco (#FFFFFF)
+            colores_club = {'Presente': '#800000', 'Ausente': '#1a237e', 'SAF': '#FFFFFF', 'Sin marcar': '#9e9e9e'}
             
-            fig_pie = px.pie(pie_data, values='Cantidad', names='Estado', 
-                             hole=0.5, # Esto lo convierte en anillo
-                             color='Estado',
-                             color_discrete_map=colores_club)
+            fig_pie = px.pie(pie_data, values='Cantidad', names='Estado', hole=0.5, color='Estado', color_discrete_map=colores_club)
             fig_pie.update_layout(showlegend=True, margin=dict(t=0, b=0, l=0, r=0))
             st.plotly_chart(fig_pie, use_container_width=True)
 
         st.divider()
 
-        # Gráfico de barras de asistencia diaria
+        # Gráfico barras
         tendencia = df_div[df_div['Asistencia']=='Presente'].groupby('Fecha').size().reset_index(name='P')
         st.plotly_chart(px.bar(tendencia, x='Fecha', y='P', title=f"Asistencia Diaria (Presentes)", color_discrete_sequence=['#800000']), use_container_width=True)
 
         # Ranking
         st.subheader("Ranking de Compromiso")
         ranking = df_div[df_div['Asistencia']=='Presente'].groupby('Jugador').size().sort_values(ascending=False).reset_index(name='Presencias')
-        # Calculamos el % individual
         ranking['% Asistencia'] = (ranking['Presencias'] / entrenamientos * 100).map('{:,.1f}%'.format)
         st.dataframe(ranking, use_container_width=True)
     else:
