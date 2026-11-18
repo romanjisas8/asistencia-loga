@@ -36,8 +36,9 @@ def cargar_asistencias():
     data = []
     for row in all_results:
         p = row["properties"]
-        fecha_raw = p.get("Fecha", {}).get("date", {}).get("start") if p.get("Fecha", {}).get("date") else None
-        if not fecha_raw: continue 
+        # LEEMOS LA PROPIEDAD "Fecha" (La única que importa)
+        fecha_notion = p.get("Fecha", {}).get("date", {}).get("start")
+        if not fecha_notion: continue 
             
         div = "S/D"
         p_div = p.get("División", {})
@@ -47,12 +48,9 @@ def cargar_asistencias():
             if arr: div = (arr[0].get("select") or {}).get("name", "S/D")
         
         asistencia = (p.get("Asistencia", {}).get("select") or {}).get("name", "Sin marcar")
-        
-        # --- CORRECCIÓN SEGURA ---
-        j_rel = p.get("Jugador", {}).get("relation", [])
-        j_id = j_rel[0].get("id", "Sin Vinculo") if len(j_rel) > 0 else "Sin Vinculo"
+        j_id = p.get("Jugador", {}).get("relation", [{}])[0].get("id", "Desconocido")
             
-        data.append({"Fecha": fecha_raw, "Asistencia": asistencia, "División": div, "JugadorID": j_id})
+        data.append({"Fecha": fecha_notion, "Asistencia": asistencia, "División": div, "JugadorID": j_id})
     return pd.DataFrame(data)
 
 st.title("🛡️ Gestión por División")
@@ -70,38 +68,36 @@ if not df_raw.empty:
         df_div = df_div.dropna(subset=['Fecha']).sort_values('Fecha')
         df_div['Jugador'] = df_div['JugadorID'].map(maestro).fillna("Desconocido")
 
-        # Métricas
-        entrenamientos = df_div['Fecha'].nunique()
+        # El total de entrenamientos ahora se basa estrictamente en los días únicos de la columna Fecha
+        fechas_unicas = sorted(df_div['Fecha'].unique())
+        entrenamientos = len(fechas_unicas)
+        mapa_nros = {f: i + 1 for i, f in enumerate(fechas_unicas)}
+        
         presentes_totales = len(df_div[df_div['Asistencia']=='Presente'])
 
         col_metrics, col_pie = st.columns([2, 1])
         with col_metrics:
-            st.subheader(f"Resumen General: {div_elegida}")
+            st.subheader(f"Resumen: {div_elegida}")
             m1, m2 = st.columns(2)
-            m1.metric("Entrenamientos", entrenamientos)
+            m1.metric("Total Entrenamientos", entrenamientos)
             m1.metric("Jugadores en Base", df_div['JugadorID'].nunique())
-            m2.metric("Promedio Asistencia (%)", f"{(presentes_totales/len(df_div)*100):.1f}%")
+            m2.metric("Promedio Asistencia", f"{(presentes_totales/len(df_div)*100):.1f}%")
             m2.metric("Promedio Presentes/Día", f"{(presentes_totales / entrenamientos):.1f}" if entrenamientos > 0 else "0")
 
-        with col_pie:
-            pie_data = df_div['Asistencia'].value_counts().reset_index()
-            pie_data.columns = ['Estado', 'Cantidad']
-            fig_pie = px.pie(pie_data, values='Cantidad', names='Estado', hole=0.5, 
-                             color='Estado', color_discrete_map={'Presente': '#800000', 'Ausente': '#1a237e', 'SAF': '#FFFFFF'})
-            fig_pie.update_layout(showlegend=True, margin=dict(t=0, b=0, l=0, r=0))
-            st.plotly_chart(fig_pie, use_container_width=True)
+        # Gráfico (Datos basados solo en propiedad Fecha)
+        presents_saf_df = df_div[df_div['Asistencia'].isin(['Presente', 'SAF'])].groupby(['Fecha', 'Asistencia']).size().reset_index(name='Cantidad')
+        presents_saf_df['Nro'] = presents_saf_df['Fecha'].map(mapa_nros)
+        presents_saf_df['Fecha_Str'] = presents_saf_df['Fecha'].dt.strftime('%d/%m/%Y')
+        presents_saf_df['Asistencia'] = pd.Categorical(presents_saf_df['Asistencia'], categories=['SAF', 'Presente'], ordered=True)
 
-        st.divider()
-        st.subheader("Tendencia de Asistencia")
-        resumen_diario = df_div.groupby(['Fecha', 'Asistencia']).size().unstack(fill_value=0).reset_index()
-        fig = px.bar(resumen_diario, x='Fecha', y=['Presente', 'SAF'], title="Asistencia Diaria", color_discrete_map={'Presente': '#800000', 'SAF': '#1a237e'})
-        st.plotly_chart(fig, use_container_width=True)
+        fig_anual = px.bar(presents_saf_df.sort_values('Asistencia'), x='Nro', y='Cantidad', color='Asistencia',
+                           title=f"Evolución {div_elegida}",
+                           color_discrete_map={'Presente': '#800000', 'SAF': '#1a237e'},
+                           hover_data={'Fecha_Str': True, 'Nro': False})
+        
+        fig_anual.update_layout(barmode='stack', hovermode="x unified")
+        st.plotly_chart(fig_anual, use_container_width=True)
 
-        st.subheader("Ranking de Compromiso")
+        st.subheader("Ranking")
         ranking = df_div[df_div['Asistencia']=='Presente'].groupby('Jugador').size().sort_values(ascending=False).reset_index(name='Presencias')
-        ranking['% Asistencia'] = (ranking['Presencias'] / entrenamientos * 100).map('{:,.1f}%'.format)
         st.dataframe(ranking, use_container_width=True)
-    else:
-        st.info(f"No hay registros válidos para {div_elegida}.")
-else:
-    st.warning("Cargando datos de Notion...")
