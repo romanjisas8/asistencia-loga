@@ -4,7 +4,6 @@ import pandas as pd
 import plotly.express as px
 from datetime import datetime, timedelta
 
-# Configuración (Usa tus secretos)
 TOKEN = st.secrets["NOTION_TOKEN"]
 DB_ASISTENCIA = st.secrets["DB_ASISTENCIA"]
 DB_JUGADORES = st.secrets["DB_JUGADORES"]
@@ -66,22 +65,20 @@ if not df_raw.empty:
         df_div = df_div.dropna(subset=['Fecha']).sort_values('Fecha')
         df_div['Jugador'] = df_div['JugadorID'].map(maestro).fillna("Desconocido")
 
-        # --- FILTRADO DE DÍAS CON ACTIVIDAD PARA EVITAR HUECOS ---
-        # Solo contamos días donde hubo al menos un Presente o SAF
+        # --- PROCESAMIENTO PARA EL GRÁFICO ---
         actividad_df = df_div[df_div['Asistencia'].isin(['Presente', 'SAF'])]
         fechas_reales = sorted(actividad_df['Fecha'].unique())
         mapa_nros = {fecha: i + 1 for i, fecha in enumerate(fechas_reales)}
         
-        # DataFrame para el gráfico apilado
         presents_saf_df = actividad_df.groupby(['Fecha', 'Asistencia']).size().reset_index(name='Cantidad')
         presents_saf_df['Nro'] = presents_saf_df['Fecha'].map(mapa_nros)
-        presents_saf_df['Fecha_Label'] = presents_saf_df['Fecha'].dt.strftime('%d/%m/%Y')
+        presents_saf_df['Fecha_Str'] = presents_saf_df['Fecha'].dt.strftime('%d/%m/%Y')
         
-        # --- FORZAR ORDEN: SAF primero (abajo) y Presente después (arriba) ---
+        # Forzar orden SAF abajo, Presente arriba
         presents_saf_df['Asistencia'] = pd.Categorical(presents_saf_df['Asistencia'], categories=['SAF', 'Presente'], ordered=True)
-        presents_saf_df = presents_saf_df.sort_values('Asistencia')
+        presents_saf_df = presents_saf_df.sort_values(['Nro', 'Asistencia'])
 
-        # Métricas
+        # Métricas principales
         entrenamientos = len(fechas_reales)
         presentes_totales = len(df_div[df_div['Asistencia']=='Presente'])
 
@@ -91,7 +88,7 @@ if not df_raw.empty:
             m1, m2 = st.columns(2)
             m1.metric("Entrenamientos", entrenamientos)
             m1.metric("Jugadores en Base", df_div['JugadorID'].nunique())
-            m2.metric("Promedio Asistencia (%)", f"{(presentes_totales/len(df_div)*100):.1f}%" if len(df_div)>0 else "0%")
+            m2.metric("Promedio Asistencia (%)", f"{(presentes_totales/len(df_div)*100):.1f}%")
             m2.metric("Jugadores x Entrenamiento", f"{(presentes_totales / entrenamientos):.1f}" if entrenamientos > 0 else "0")
 
         with col_pie:
@@ -104,22 +101,16 @@ if not df_raw.empty:
 
         st.divider()
 
-        # --- GRÁFICO ANUAL (SIN HUECOS Y SAF ABAJO) ---
+        # --- GRÁFICO ANUAL (VERSIÓN ESTABLE) ---
         st.subheader("Tendencia de Asistencia (Presentes y SAF)")
+        
         fig_anual = px.bar(presents_saf_df, x='Nro', y='Cantidad', color='Asistencia',
                            title=f"Evolución Anual - {div_elegida}",
                            labels={'Nro': 'Nro de Entrenamiento', 'Cantidad': 'Jugadores'},
                            color_discrete_map={'Presente': '#800000', 'SAF': '#1a237e'},
-                           category_orders={"Asistencia": ["SAF", "Presente"]}) # SAF ABAJO
+                           hover_data={'Fecha_Str': True, 'Nro': False}) # Incluimos la fecha directo aquí
         
-        # Agregar fecha al hover
-        fig_anual.update_traces(hovertemplate="<b>Entrenamiento %{x}</b><br>Fecha: %{customdata[0]}<br>Cantidad: %{y}<extra></extra>")
-        fig_anual.update_layout(hovermode="x unified")
-        
-        # Cruzar datos de fecha para el hover
-        fechas_hover = presents_saf_df.groupby('Nro')['Fecha_Label'].first().values
-        fig_anual.update_traces(customdata=fechas_hover.reshape(-1, 1))
-
+        fig_anual.update_layout(barmode='stack', hovermode="x unified")
         st.plotly_chart(fig_anual, use_container_width=True)
 
         # Ranking
